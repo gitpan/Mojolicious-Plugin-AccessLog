@@ -2,7 +2,7 @@ NAME
     Mojolicious::Plugin::AccessLog - AccessLog Plugin
 
 VERSION
-    Version 0.001
+    Version 0.002
 
 SYNOPSIS
       # Mojolicious
@@ -146,7 +146,7 @@ OPTIONS
           %h %l %u %t "%r" %>s %b
 
     combined
-          %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-agent}i"
+          %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"
 
   "hostname_lookups"
     Enable reverse DNS hostname lookup if "true". Keep in mind, that this

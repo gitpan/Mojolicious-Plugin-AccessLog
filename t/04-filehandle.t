@@ -30,7 +30,7 @@ plugin 'AccessLog',
     log => $logfh,
     format =>
         '%% %a %A %b %B %D %h %H %m %p %P "%q" "%r" %>s %t %T %u %U %v %V ' .
-        '"%{Referer}i" "%{User-agent}i"';
+        '"%{Referer}i" "%{User-Agent}i"';
 
 any '/:any' => sub { shift->render_text('done') };
 
@@ -53,7 +53,7 @@ sub req_ok {
 
     if (index($url, '@') > -1) {
         ($user, $url) = split '@', $url, 2;
-        $opts = {Authorization => 'Basic ' . b64_encode($user . ':pass')};
+        $opts->{Authorization} = 'Basic ' . b64_encode($user . ':pass', '');
     }
 
     $pos = index($url, '?');

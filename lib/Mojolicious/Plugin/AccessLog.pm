@@ -10,12 +10,12 @@ use Scalar::Util qw(blessed reftype);
 use Socket qw(inet_aton AF_INET);
 use Time::HiRes qw(gettimeofday tv_interval);
 
-our $VERSION = '0.001';
+our $VERSION = '0.002';
 
 my $DEFAULT_FORMAT = 'common';
 my %FORMATS = (
     $DEFAULT_FORMAT => '%h %l %u %t "%r" %>s %b',
-    combined => '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-agent}i"',
+    combined => '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
 );
 
 # some systems (Windows) don't support %z correctly
@@ -43,15 +43,15 @@ sub register {
         select((select($log), $| = 1)[0]);
         $logger = sub { print $log $_[0] };
     }
-    elsif (blessed $log and my $l = $log->can('print') || $log->can('info')) {
+    elsif (blessed($log) and my $l = $log->can('print') || $log->can('info')) {
         $logger = sub { $l->($log, $_[0]) };
     }
-    elsif ($reftype eq 'CODE') {    # TEST
-        $logger = $log;             # TEST
+    elsif ($reftype eq 'CODE') {
+        $logger = $log;
     }
     elsif (defined $log and not ref $log) {
         File::Spec->file_name_is_absolute($log)
-            or $log = $app->home->rel_file($log);   # TEST
+            or $log = $app->home->rel_file($log);
 
         my $logdir = File::Spec->catpath((File::Spec->splitpath($log))[0,-2], '');
 
@@ -72,7 +72,7 @@ sub register {
         return;
     }
 
-    my $format = $FORMATS{$conf->{format} // $DEFAULT_FORMAT} || $conf->{format};   # TEST
+    my $format = $FORMATS{$conf->{format} // $DEFAULT_FORMAT} || $conf->{format};
     my @handler;
     my $strftime = sub {
         my ($fmt, @time) = @_;
@@ -163,39 +163,31 @@ sub register {
         return '-';
     };
 
-    $format =~ s{
+    $format =~ s~
         (?:
          \%\{(.+?)\}([a-z]) |
          \%(?:[<>])?([a-zA-Z\%])
         )
-    }
-    {
+    ~
         push @handler, $1 ? $block_handler->($1, $2) : $char_handler->($3);
         '%s';
-    }egx;
+    ~egx;
 
     chomp $format;
     $format .= $conf->{lf} // $/ // "\n";
 
-    if ($time_stats) {
-        $app->hook(
-            around_dispatch => sub {
-                my ($next, $c) = @_;
-                my @t0 = gettimeofday;
+    $app->hook(
+        before_dispatch => sub {
+            my $c = shift;
+            my $t0; $t0 = [gettimeofday] if $time_stats;
 
-                $next->();
+            $c->tx->on(finish => sub {
+                my $tx = shift;
+                $logger->(_log($tx, $format, \@handler, $t0 ? tv_interval($t0) : ()));
+            });
+        }
+    );
 
-                $logger->(_log($c->tx, $format, \@handler, tv_interval(\@t0)));
-            }
-        );
-    }
-    else {
-        $app->hook(
-            after_dispatch => sub {
-                $logger->(_log($_[0]->tx, $format, \@handler))
-            }
-        );
-    }
 }
 
 sub _log {
@@ -225,7 +217,7 @@ Mojolicious::Plugin::AccessLog - AccessLog Plugin
 
 =head1 VERSION
 
-Version 0.001
+Version 0.002
 
 =head1 SYNOPSIS
 
@@ -433,7 +425,7 @@ also be used (note, that these contain the unsupported C<%l> directive):
 
 =item combined
 
-  %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-agent}i" 
+  %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i" 
 
 =back
 

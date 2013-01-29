@@ -34,4 +34,4 @@ requires:
 resources:
   license: http://dev.perl.org/licenses/
   repository: git://github.com/augensalat/mojolicious-plugin-accesslog.git
-version: 0.001
+version: 0.002
