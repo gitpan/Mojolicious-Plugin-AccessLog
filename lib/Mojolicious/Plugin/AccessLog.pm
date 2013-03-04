@@ -10,13 +10,15 @@ use Scalar::Util qw(blessed reftype);
 use Socket qw(inet_aton AF_INET);
 use Time::HiRes qw(gettimeofday tv_interval);
 
-our $VERSION = '0.002';
+our $VERSION = '0.003';
 
 my $DEFAULT_FORMAT = 'common';
 my %FORMATS = (
     $DEFAULT_FORMAT => '%h %l %u %t "%r" %>s %b',
     combined => '%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"',
 );
+
+my $STASH_ID = 'mojolicious.plugin.accesslog.username';
 
 # some systems (Windows) don't support %z correctly
 my $TZOFFSET = strftime('%z', localtime) !~ /^[+-]\d{4}$/ && do {
@@ -72,7 +74,16 @@ sub register {
         return;
     }
 
-    my $format = $FORMATS{$conf->{format} // $DEFAULT_FORMAT} || $conf->{format};
+    if ($conf->{uname_helper}) {
+        my $helper_name = $conf->{uname_helper};
+
+        $helper_name = 'set_username' if $helper_name !~ /^[\_A-za-z]\w*$/;
+
+        $app->helper(
+            $helper_name => sub { $_[0]->stash->{$STASH_ID} = $_[1] }
+        );
+    }
+
     my @handler;
     my $strftime = sub {
         my ($fmt, @time) = @_;
@@ -83,26 +94,38 @@ sub register {
         setlocale(LC_ALL, $old_locale);
         return $out;
     };
+    my $format = $FORMATS{$conf->{format} // $DEFAULT_FORMAT};
+    my $safe_re;
+
+    if ($format) {
+        # Apache default log formats don't quote username, which might
+        # have spaces.
+        $safe_re = qr/([^[:print:]]|\s)/;
+    }
+    else {
+        # For custom log format appropriate quoting is the user's reponsibility.
+        $format = $conf->{format};
+    }
 
     # each handler is called with following parameters:
-    # ($tx, $tx->req, $tx->res, $tx->req->url, $time)
+    # ($c, $tx, $tx->req, $tx->res, $tx->req->url, $time)
 
     my $block_handler = sub {
         my ($block, $type) = @_;
 
-        return sub { _safe($_[1]->headers->header($block) // '-') }
+        return sub { _safe($_[2]->headers->header($block) // '-') }
             if $type eq 'i';
 
-        return sub { $_[2]->headers->header($block) // '-' }
+        return sub { $_[3]->headers->header($block) // '-' }
             if $type eq 'o';
 
         return sub { '[' . $strftime->($block, localtime) . ']' }
             if $type eq 't';
 
-        return sub { _safe($_[1]->cookie($block // '')) }
+        return sub { _safe($_[2]->cookie($block // '')) }
             if $type eq 'C';
 
-        return sub { _safe($_[1]->env->{$block // ''}) }
+        return sub { _safe($_[2]->env->{$block // ''}) }
             if $type eq 'e';
 
         $app->log->error("{$block}$type not supported");
@@ -110,41 +133,53 @@ sub register {
         return '-';
     };
 
-    my $servername_cb = sub { $_[3]->base->host || '-' };
-    my $remoteaddr_cb = sub { $_[0]->remote_address || '-' };
+    my $servername_cb = sub { $_[4]->base->host || '-' };
+    my $remoteaddr_cb = sub { $_[1]->remote_address || '-' };
     my %char_handler = (
         '%' => '%',
         a => $remoteaddr_cb,
-        A => sub { $_[0]->local_address // '-' },
-        b => sub { $_[2]->is_dynamic ? '-' : $_[2]->body_size || '-' },
-        B => sub { $_[2]->is_dynamic ? '0' : $_[2]->body_size },
-        D => sub { $_[4] * 1000000 },
+        A => sub { $_[1]->local_address // '-' },
+        b => sub { $_[3]->is_dynamic ? '-' : $_[3]->body_size || '-' },
+        B => sub { $_[3]->is_dynamic ? '0' : $_[3]->body_size },
+        D => sub { int($_[5] * 1000000) },
         h => $remoteaddr_cb,
-        H => sub { 'HTTP/' . $_[1]->version },
+        H => sub { 'HTTP/' . $_[2]->version },
         l => '-',
-        m => sub { $_[1]->method },
-        p => sub { $_[0]->local_port },
+        m => sub { $_[2]->method },
+        p => sub { $_[1]->local_port },
         P => sub { $$ },
         q => sub {
-            my $s = $_[3]->query->to_string or return '';
+            my $s = $_[4]->query->to_string or return '';
             return '?' . $s;
         },
         r => sub {
-            $_[1]->method . ' ' . _safe($_[3]->to_string) .
-            ' HTTP/' . $_[1]->version
+            $_[2]->method . ' ' . _safe($_[4]->to_string) .
+            ' HTTP/' . $_[2]->version
         },
-        s => sub { $_[2]->code },
+        s => sub { $_[3]->code },
         t => sub { '[' . $strftime->('%d/%b/%Y:%H:%M:%S %z', localtime) . ']' },
-        T => sub { int $_[4] },
-        u => sub { _safe((split ':', $_[3]->base->userinfo || '-:')[0]) },
-        U => sub { $_[3]->path },
+        T => sub { int $_[5] },
+        u => sub {
+            my $user = $_[0]->stash->{$STASH_ID};
+
+            unless (defined $user) {
+                if (defined($user = $_[4]->base->userinfo)) {
+                    $user = (split ':', $_[4]->base->userinfo || '-:')[0];
+                }
+                else {
+                    $user = $ENV{REMOTE_USER} // '-';
+                }
+            }
+            return _safe($user, $safe_re)
+        },
+        U => sub { $_[4]->path },
         v => $servername_cb,
         V => $servername_cb,
     );
 
     if ($conf->{hostname_lookups}) {
         $char_handler{h} = sub {
-            my $ip = $_[0]->remote_address or return '-';
+            my $ip = $_[1]->remote_address or return '-';
             return gethostbyaddr(inet_aton($ip), AF_INET);
         };
     }
@@ -165,8 +200,8 @@ sub register {
 
     $format =~ s~
         (?:
-         \%\{(.+?)\}([a-z]) |
-         \%(?:[<>])?([a-zA-Z\%])
+        \%\{(.+?)\}([a-z]) |
+        \%(?:[<>])?([a-zA-Z\%])
         )
     ~
         push @handler, $1 ? $block_handler->($1, $2) : $char_handler->($3);
@@ -183,7 +218,7 @@ sub register {
 
             $c->tx->on(finish => sub {
                 my $tx = shift;
-                $logger->(_log($tx, $format, \@handler, $t0 ? tv_interval($t0) : ()));
+                $logger->(_log($c, $format, \@handler, $t0 ? tv_interval($t0) : ()));
             });
         }
     );
@@ -191,17 +226,19 @@ sub register {
 }
 
 sub _log {
-    my ($tx, $format, $handler) = (shift, shift, shift);
+    my ($c, $format, $handler) = (shift, shift, shift);
+    my $tx = $c->tx;
     my $req = $tx->req;
-    my @args = ($tx, $req, $tx->res, $req->url, @_);
+    my @args = ($c, $tx, $req, $tx->res, $req->url, @_);
 
     sprintf $format, map(ref() ? ($_->(@args))[0] // '' : $_, @$handler);
 }
 
 sub _safe {
     my $string = shift;
+    my $re = shift // qr/([^[:print:]])/;
 
-    $string =~ s/([^[:print:]])/"\\x" . unpack("H*", $1)/eg
+    $string =~ s/$re/'\x' . unpack('H*', $1)/eg
         if defined $string;
 
     return $string;
@@ -217,7 +254,7 @@ Mojolicious::Plugin::AccessLog - AccessLog Plugin
 
 =head1 VERSION
 
-Version 0.002
+Version 0.003
 
 =head1 SYNOPSIS
 
@@ -235,7 +272,7 @@ access log.
 =head1 OPTIONS
 
 L<Mojolicious::Plugin::AccessLog> supports the following options.
- 
+
 =head2 C<log>
 
 Log data destination.
@@ -414,8 +451,11 @@ The contents of environment variable C<VariableName>.
 
 =back
 
+Non-printable bytes are replaced by an escape sequence of C<\x..> with
+C<..> being the hexadecimal code of the replaced byte.
+
 For mostly historical reasons template names "common" or "combined" can
-also be used (note, that these contain the unsupported C<%l> directive):
+also be used:
 
 =over
 
@@ -425,7 +465,26 @@ also be used (note, that these contain the unsupported C<%l> directive):
 
 =item combined
 
-  %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i" 
+  %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"
+
+=back
+
+These format template names have two drawbacks though:
+
+=over
+
+=item 1.
+
+The username (%u) is not quoted, but a username is allowed to
+contain spaces. As a consequence, log file parsers might lose track of
+the right fields. To get around this, spaces in usernames are replaced
+by C<\x20> if one of the format template names is used.
+
+=item 2.
+
+The remote logname C<%l> as provided by an ident service is not usefull
+these days and therefore not supported, C<%l> is always substituted by
+a hyphen (C<"-">).
 
 =back
 
@@ -435,6 +494,34 @@ Enable reverse DNS hostname lookup if C<true>. Keep in mind, that this
 adds latency to every request, if C<%h> is part of the log line, because
 it requires a DNS lookup to complete before the request is finished.
 Default is C<false> (= disabled).
+
+=head2 C<uname_helper>
+
+  plugin AccessLog => {
+    log => '/var/log/mojo/access.log',
+    uname_helper => 'set_username',
+  };
+
+  ...
+
+  # custom authentication for all following resources
+  under => sub {
+    my $self = shift;
+    my $username = $self->param('username') || '';
+
+    if ($username =~ /^mc/) {   # Scottish only 
+      $self->set_username($username);
+    }
+    else {
+      $self->render('denied');
+      return undef;
+    }
+  };
+
+Define a name for a L<helper|Mojolicious/helper> to set the username.
+The default is to use the username part of the L<Mojo::URL/userinfo>.
+With a custom C<uname_helper> any identifier can be set for the user
+value in the log file.
 
 =head1 METHODS
 
@@ -471,7 +558,7 @@ Bernhard Graf <graf(a)cpan.org>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2012 Bernhard Graf
+Copyright (C) 2012, 2013 Bernhard Graf
 
 This library is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.

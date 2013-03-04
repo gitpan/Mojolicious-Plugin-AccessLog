@@ -4,11 +4,11 @@ author:
   - 'Bernhard Graf <graf(a)cpan.org>'
   - 'Bernhard Graf <graf@cpan.org>'
 build_requires:
-  ExtUtils::MakeMaker: 6.36
+  ExtUtils::MakeMaker: 6.59
   Test::Mojo: 0
   Test::More: 0
 configure_requires:
-  ExtUtils::MakeMaker: 6.36
+  ExtUtils::MakeMaker: 6.59
 distribution_type: module
 dynamic_config: 1
 generated_by: 'Module::Install version 1.06'
@@ -31,7 +31,8 @@ requires:
   Socket: 0
   Time::HiRes: 0
   Time::Local: 0
+  perl: 5.10.1
 resources:
   license: http://dev.perl.org/licenses/
   repository: git://github.com/augensalat/mojolicious-plugin-accesslog.git
-version: 0.002
+version: 0.003
