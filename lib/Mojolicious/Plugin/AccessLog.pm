@@ -10,7 +10,7 @@ use Scalar::Util qw(blessed reftype);
 use Socket qw(inet_aton AF_INET);
 use Time::HiRes qw(gettimeofday tv_interval);
 
-our $VERSION = '0.003';
+our $VERSION = '0.004';
 
 my $DEFAULT_FORMAT = 'common';
 my %FORMATS = (
@@ -139,8 +139,8 @@ sub register {
         '%' => '%',
         a => $remoteaddr_cb,
         A => sub { $_[1]->local_address // '-' },
-        b => sub { $_[3]->is_dynamic ? '-' : $_[3]->body_size || '-' },
-        B => sub { $_[3]->is_dynamic ? '0' : $_[3]->body_size },
+        b => sub { $_[3]->content->is_dynamic ? '-' : $_[3]->body_size || '-' },
+        B => sub { $_[3]->content->is_dynamic ? '0' : $_[3]->body_size },
         D => sub { int($_[5] * 1000000) },
         h => $remoteaddr_cb,
         H => sub { 'HTTP/' . $_[2]->version },
@@ -254,7 +254,7 @@ Mojolicious::Plugin::AccessLog - AccessLog Plugin
 
 =head1 VERSION
 
-Version 0.003
+Version 0.004
 
 =head1 SYNOPSIS
 
